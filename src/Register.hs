@@ -176,80 +176,26 @@ class Instruction instr operands where
 
 -- If we have two Instructions, their sum is also a valid instruction
 instance (Instruction i1 a, Instruction i2 a) => Instruction (Sum i1 i2) a where
-    interpret (InL instr) machine = interpret instr machine
-    interpret (InR instr) machine = interpret instr machine
+    interpret (InL instr) machinestate = interpret instr machinestate
+    interpret (InR instr) machinestate = interpret instr machinestate
 
--- Define Codeable values
-class Codeable a where
-    encode :: a -> Integer
-    decode :: Integer -> a
-
-instance Codeable Integer where
-    encode = id
-    decode = id
-
-editCode :: Codeable a => (Integer -> Integer) -> a -> a
-editCode f = decode . f . encode
-
--- Use factorPowers to implement 2^x * 3^y... etc coding functions
-factorPowers :: Integer -> [(Integer, Integer)]
-factorPowers x = x
-               & primeFactors
-               & group
-               & map (\x -> (head x, fromIntegral $ length x))
-
--- Define generic codeable instances for most values we could want.
-instance (Codeable a) => Codeable [a] where
-    -- Use primes to code lists - The 2 ^ head * 3 ^ tail coding system would
-    -- be much prettier, but would be prohibitive from a number size
-    -- perspective even for the smallest inputs.
-    encode xs = product $ zipWith (^) primes $ map encode xs
-    decode x = map decode $ f (factorPowers x) primes
-        where
-            f [] _ = []
-            f ((factor, power):factors) (prime : primes)
-                | factor == prime = power : f factors primes
-                | otherwise       = 0 : f ((factor, power):factors) primes
-
-instance (Codeable a, Codeable b) => Codeable (a, b) where
-    encode (a, b) = 2 ^ encode a * 3 ^ encode b
-    decode x = let (a:b:_) = decode x ++ [0..]
-                in (decode a, decode b)
-
-instance (Codeable a, Codeable b) => Codeable (Either a b) where
-    encode x = case x of
-                 Left a -> 3 ^ encode a
-                 Right a -> 2 * 3 ^ encode a
-    decode x = let (a:b:_) = decode x ++ [0..]
-                in if a == 0 then Left (decode b) else Right (decode b)
-
-instance (Codeable a) => Codeable (Instr a) where
-    encode (Inc (Register r)) = encode [1, encode r]
-    encode (Decjz (Register r) label) = encode [2, encode r, encode label]
-    decode x = let (a:b:c:_) = decode x ++ [0..]
-                in if a == 1
-                      then Inc $ Register $ decode b
-                      else Decjz (Register $ decode b) (decode c)
-
--- We can define codeable instances for the Machine later...
-
--- Now we define that Instrs can manipulate any codeable value, which includes
+-- Now we define that Instrs can manipulate any integer value, which includes
 -- plain old integers
-instance (Codeable a, Default a) => Instruction Instr a where
+instance Instruction Instr Integer where
     interpret instr machine = case instr of
       Decjz (statelens -> reg) label        -- If the instruction is a jump...
-        -> if encode (L.view reg machine) == 0
+        -> if L.view reg machine == 0
             then machine                        -- If the register is 0 / undefined...
-                    & L.set  reg (decode 0)         -- Set the register to 0
+                    & L.set  reg 0                  -- Set the register to 0
                     & L.set  position label         -- Jump to the label
 
             else machine                        -- If the register is not 0 / undefined...
-                    & L.over reg (editCode pred)    -- Decrement the register
+                    & L.over reg pred               -- Decrement the register
                     & L.over position succ          -- Go to the successive position
 
       Inc (statelens -> reg)                -- If the instruction is an increment...
         -> machine
-            & L.over reg (editCode succ)        -- Increment the register
+            & L.over reg succ                   -- Increment the register
             & L.over position succ              -- Increment the position
 
 -- Submachines encapsulate the concept of running a register machine inside of
