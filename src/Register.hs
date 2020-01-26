@@ -8,7 +8,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -56,11 +55,20 @@ instance Show Register where
 data Instr label = Decjz Register label | Inc Register
     deriving (Show, Read, Eq, Ord, Functor)
 
-data Macro instr label = Macro String [Register] [label] | NoMacro (instr label)
+-- Simple string labels, using a newtype wrapper so we can write custom read
+-- parsers for them
+newtype Label = Label String
+    deriving (Show, Eq, Ord)
+
+data Macro instr label
+    = Macro { macroName :: String
+            , macroArgs :: [Either Register label]
+            }
+    | NoMacro (instr label)
     deriving (Eq, Ord)
 
 instance (Functor instr) => Functor (Macro instr) where
-    fmap f (Macro name regs labels) = Macro name regs (fmap f labels)
+    fmap f (Macro name args) = Macro name (map (fmap f) args)
     fmap f (NoMacro instr) = NoMacro (fmap f instr)
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
@@ -79,15 +87,12 @@ type Code = GCode Instr
 newtype GAssembly instr label = Assembly { unassembly :: [(Maybe label, instr label)] }
     deriving (Show, Eq, Ord, Functor, Semigroup, Monoid)
 
-newtype Label = Label String
-    deriving (Show, Eq, Ord)
-
 type Assembly = GAssembly Instr
 type MGAssembly instr = GAssembly (Macro instr)
 type MAssembly = MGAssembly Instr
 
 -- Turn assembly into code
-assemble :: (Ord a, Functor instr) => GAssembly instr a -> GCode instr
+assemble :: (Ord label, Functor instr) => GAssembly instr label -> GCode instr
 assemble (Assembly assembly)
   = M.fromList $ zip [0..] $ map (f . snd) assembly
     where
@@ -101,17 +106,17 @@ assemble (Assembly assembly)
 
 -- Join two assemblies, end to end
 -- Just a synonym for the monoid on lists
-join :: GAssembly instr a -> GAssembly instr a -> GAssembly instr a
+join :: GAssembly instr label -> GAssembly instr label -> GAssembly instr label
 join = (<>)
 
 -- Join multiple assemblies, end to end to end to...
 -- Just a synonym for fold using the monoid on lists
-joinAll :: [GAssembly instr a] -> GAssembly instr a
+joinAll :: [GAssembly instr label] -> GAssembly instr label
 joinAll = fold
 
 -- Merge different assemblies without chance of misreferencing
 mergeMany :: (Functor instr)
-          => [GAssembly instr a] -> GAssembly instr (Int, a)
+          => [GAssembly instr label] -> GAssembly instr (Int, label)
 mergeMany assemblies 
   = assemblies
     -- Assign an index to each assembly's labels
@@ -121,20 +126,29 @@ mergeMany assemblies
 
 -- Merge two assemblies, even of different types
 mergeTwo :: (Functor instr)
-         => GAssembly instr a -> GAssembly instr b -> GAssembly instr (Either a b)
+         => GAssembly instr label1 -> GAssembly instr label2 -> GAssembly instr (Either label1 label2)
 mergeTwo a b = join (fmap Left a) (fmap Right b)
+
+-- Resolve the macros in an assembly
+resolveMacros :: (Functor instr)
+              => (String -> [Either Register labelInput] -> GAssembly instr labelInput)
+              -> MGAssembly instr label -> GAssembly instr label
+resolveMacros = undefined
 
 -- Machine - puts all of the types together
 -- We keep the instruction and value types general so that we can manipulate
 -- any codeable value later, and upgrade our instruction set to have oracles
+-- and macros
 data GMachine instr values
-    = RM
+    = GM
     { _instructions :: GCode instr
     , _state :: GMachineState values
     }
 
+-- Separate out machine state so that separate instructions can manipulate the
+-- same state (refer to Instruction typeclass for Sum)
 data GMachineState values
-    = RMState
+    = GMState
     { _registers :: M.Map Register values
     , _position :: Position
     }
@@ -146,8 +160,8 @@ L.makeLenses ''GMachine
 L.makeLenses ''GMachineState
 
 -- Create pattern for getting all fields from machine
-pattern GMachineAll _instructions _registers _position <- RM _instructions (RMState _registers _position) where
-    GMachineAll _instructions _registers _position = RM _instructions (RMState _registers _position)
+pattern GMachineAll _instructions _registers _position <- GM _instructions (GMState _registers _position) where
+    GMachineAll _instructions _registers _position = GM _instructions (GMState _registers _position)
 
 -- Get the current instruction of the machine, if there is any at the machine position
 instruction :: GMachine instr values -> Maybe (instr Position)
@@ -212,11 +226,11 @@ data Submachine instr labels
     , resultRegs :: M.Map Register Register
     }
 
-mapWithMap :: Ord k => M.Map k k -> M.Map k a -> M.Map k a
-mapWithMap keysMapping = M.mapMaybeWithKey (\k a -> const a <$> M.lookup k keysMapping)
+transformWithMap :: Ord k => M.Map k k -> M.Map k a -> M.Map k a
+transformWithMap keysMapping = M.mapMaybeWithKey (\k a -> const a <$> M.lookup k keysMapping)
 
 restrictWithList :: (Ord k, Enum k, Num k) => [k] -> M.Map k a -> M.Map k a
-restrictWithList keys = mapWithMap keysMapping
+restrictWithList keys = transformWithMap keysMapping
     where
         keysMapping = M.fromList $ zip keys [0..]
 
@@ -228,19 +242,24 @@ instance (Instruction instr values, Default values) => Instruction (Submachine i
               -- Increment the current position
             & L.over position succ
         where
-            initialState = RMState (restrictWithList inputRegs $ _registers machinestate)
+            initialState = GMState (restrictWithList inputRegs $ _registers machinestate)
                                    (Position 0)
-            finalMachine = run $ RM gcode initialState
+            finalMachine = run $ GM gcode initialState
             finalRegisters = finalMachine
                            & _state & _registers
-                           & mapWithMap resultRegs
+                           & transformWithMap resultRegs
 
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
 -- ============================================================================
 -- We use the ReadP parser combinator to parse in the assembly / machine easily
 
--- Parser SP and NL parts of grammar
+-- Helper for parsing - either runs the parser, returning Just a, or returns
+-- Nothing at all
+maybeParse :: ReadP a -> ReadP (Maybe a)
+maybeParse = option Nothing . fmap Just
+
+-- Parsers for SP and NL parts of grammar
 sp = munch1 (`elem` " \t")
 nl = do
     char '\n'
@@ -249,12 +268,7 @@ nl = do
         munch ('\n' /=)
         char '\n'
 
--- Helper for parsing - either runs the parser, returning Just a, or returns
--- Nothing at all
-maybeParse :: ReadP a -> ReadP (Maybe a)
-maybeParse = option Nothing . fmap Just
-
--- Parse identifiers and labels
+-- Parsers for identifiers and labels
 identifier :: ReadP String
 identifier = liftM2 (:) (satisfy isAlpha) (munch isAlphaNum)
 
@@ -265,20 +279,28 @@ label = fmap Label identifier
 parseStringAssembly :: ReadP (Assembly Label)
 parseStringAssembly = parseGAssembly (parseInstr label) label
 
--- Parse in a macro, given a parser for the instruction
-parseMacro :: ReadP (instr label) -> ReadP (Macro instr label)
-parseMacro inst = choice [macro, fmap NoMacro inst]
+-- Parse in a macro, given a parser for underlying label and instruction
+parseMacro :: ReadP label -> ReadP (instr label) -> ReadP (Macro instr label)
+parseMacro label inst = choice [macro, fmap NoMacro inst]
     where
     macro = do
         string "macro"
         sp
         name <- identifier
-        rs <- many $ sp >> register
-        pure $ Macro name rs []
+        args <- many arg
+        pure $ Macro name args
+
+    arg = do
+        sp
+        choice [fmap Left register, fmap Right labelArgument]
+
+    labelArgument = do
+        char '#'
+        label
 
 instance (Read1 instr) => Read1 (Macro instr) where
     liftReadsPrec readsPrec readList _
-      = readP_to_S $ parseMacro 
+      = readP_to_S $ parseMacro (readS_to_P $ readsPrec 10)
       $ readS_to_P $ liftReadsPrec readsPrec readList 10
 
 -- Parse in a register
@@ -359,7 +381,10 @@ instance (Functor instr, Read1 instr, Read values) => Read (GMachine instr value
 
 instance (Show (instr label), Show label) => Show (Macro instr label) where
     show (NoMacro x) = show x
-    show (Macro x xs ys) = unwords $ ["Macro", show x] ++ map show xs ++ map show ys
+    show (Macro x args) = unwords $ ["Macro", show x] ++ map showArg args
+        where
+            showArg (Left x) = show x
+            showArg (Right x) = '#' : show x
 
 -- Debug will print out a machine as registers and instructions
 -- Optionally, if markPosition is set, it will put a '*' next to the line
@@ -386,7 +411,7 @@ debug markPosition (GMachineAll _instructions _registers _position)
           ++ " : " ++ show (fmap unpos instr)
 
 -- Report the registers as according to the coursework spec
-reportRegisters :: M.Map Register Integer -> String
+reportRegisters :: (Show value, Default value) => M.Map Register value -> String
 reportRegisters positions = "registers " ++ unwords regs
     where
     -- Lookup the register for each position, defaulting to 0 if it isn't there
