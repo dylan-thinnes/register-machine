@@ -1,4 +1,10 @@
-module Codeable where
+module Register.Codeable where
+
+import Register
+
+import Data.Function ((&))
+import Data.Numbers.Primes (primes, primeFactors)
+import Data.List (groupBy, group)
 
 -- Define Codeable values
 class Codeable a where

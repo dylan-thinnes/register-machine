@@ -35,9 +35,6 @@ import Data.Default
 import qualified Data.Functor.Foldable as F
 import Data.Functor.Sum
 
-import Data.Numbers.Primes (primes, primeFactors)
-import Data.List (groupBy, group)
-
 import Data.Functor.Classes
 
 -- ============================================================================
@@ -63,6 +60,8 @@ newtype Label = Label String
 data Macro instr label
     = Macro { macroName :: String
             , macroArgs :: [Either Register label]
+            -- , macroRegs :: [Either Register label]
+            -- , macroLabs :: [Either Register label]
             }
     | NoMacro (instr label)
     deriving (Eq, Ord)
