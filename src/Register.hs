@@ -198,9 +198,9 @@ resolveMacros :: (Functor i1, Functor i2, Monad m)
               -> m (GAssembly (InstrSum (Submachine i1) i2) label)
 resolveMacros converter
   = let (|>) = flip (.) -- Simple "composition in reverse", just this once
-     in -- Unwrap
-        unassembly
-        -- Run the following functions on every Macro:
+     in  -- Unwrap
+         unassembly
+         -- Run the following functions on every Macro:
       |> map ( fmap
           (  natTrans converter id   -- Run the natural transformation
           |> sumToEither             -- Temporarily turn the sum into an either
@@ -208,9 +208,9 @@ resolveMacros converter
           |> bitraverse id id        -- Bitraverse the monad out from the either
           |> fmap eitherToSum        -- Turn the either back into a sum
           ))
-        -- Sequence out the monad in one step w/ Compose
+         -- Sequence out the monad in one step w/ Compose
       |> Compose |> sequence |> fmap getCompose
-        -- Rewrap within the monad
+         -- Rewrap within the monad
       |> fmap Assembly
 
 -- Resolve the macros with a pure natural transformation
