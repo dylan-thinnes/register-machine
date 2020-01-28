@@ -5,7 +5,7 @@ import Register
 import qualified Data.Map as M
 
 -- Testing
-test = GMachineAll instrs registers 0
+test = GMachineAll instrs registers $ Right 0
     where
     registers = M.empty
     instrs = M.fromList $ zip [0..]
@@ -14,7 +14,7 @@ test = GMachineAll instrs registers 0
         , Inc 1
         ]
 
-example :: Machine
+example :: Machine Label
 example = read $ unlines
     [ "registers 10 5"
     , "loop : decjz r1 HALT"
@@ -23,7 +23,7 @@ example = read $ unlines
     ]
 
 -- Square Program
-square i = GMachineAll instrs registers 0
+square i = GMachineAll instrs registers $ Right 0
     where
     registers = M.fromList $
         [(Register 0, i)
@@ -45,7 +45,7 @@ square i = GMachineAll instrs registers 0
         ),(Nothing,     Decjz (-4) "l3" -- uncond
         )]
 
-squareReadAssembly i = read $ squareReadAssemblyStr i :: Machine
+squareReadAssembly i = read $ squareReadAssemblyStr i :: Machine Label
 squareReadAssemblyStr i = unlines
      $ [ "registers " ++ show i
        , "l1 : decjz r0 l2"
@@ -64,29 +64,31 @@ squareReadAssemblyStr i = unlines
        , "       decjz r-4 l3"
        ]
 
-squareNoAssembly i = GMachineAll instrs registers 0
+squareNoAssembly :: Integer -> GMachine Label Instr Integer
+squareNoAssembly i = GMachineAll instrs registers $ Right 0
     where
     registers = M.fromList $
         [(Register 0, i)
         ]
     instrs = M.fromList $ zip [0..]
-        [ Decjz 0 4
+        [ decjz 0 4
         ,   Inc (-1)
         ,   Inc (-2)
-        ,   Decjz (-4) 0 -- uncond
-        , Decjz (-1) 12
-        ,   Decjz (-2) 9
+        ,   decjz (-4) 0 -- uncond
+        , decjz (-1) 12
+        ,   decjz (-2) 9
         ,     Inc 0
         ,     Inc (-3)
-        ,     Decjz (-4) 5 -- uncond
-        ,   Decjz (-3) 4
+        ,     decjz (-4) 5 -- uncond
+        ,   decjz (-3) 4
         ,     Inc (-2)
-        ,     Decjz (-4) 9 -- uncond
-        , Decjz (-2) 14
-        ,   Decjz (-4) 12 -- uncond
+        ,     decjz (-4) 9 -- uncond
+        , decjz (-2) 14
+        ,   decjz (-4) 12 -- uncond
         ]
+    decjz r l = fmap Right $ Decjz r l
 
-readMacroAssembly i = read $ readMacroAssemblyStr i :: GMachine (Macro Instr) Integer
+readMacroAssembly i = read $ readMacroAssemblyStr i :: GMachine Label (Macro Instr) Integer
 readMacroAssemblyStr i = unlines
      $ [ "registers " ++ show i
        , "l1 : decjz r0 l2"

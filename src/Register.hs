@@ -11,6 +11,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Register where
 
@@ -58,25 +59,31 @@ newtype Label = Label String
     deriving (Show, Eq, Ord)
 
 data Macro instr label
-    = Macro { macroName :: String
-            , macroArgs :: [Either Register label]
-            -- , macroRegs :: [Either Register label]
-            -- , macroLabs :: [Either Register label]
-            }
+    = Macro (MacroData label)
     | NoMacro (instr label)
     deriving (Eq, Ord)
 
+data MacroData label
+    = MacroData
+    { name :: String
+    , macroRegisters :: [Register]
+    , macroLabels :: [label]
+    }
+    deriving (Eq, Ord, Functor)
+
 instance (Functor instr) => Functor (Macro instr) where
-    fmap f (Macro name args) = Macro name (map (fmap f) args)
+    fmap f (Macro dat) = Macro (fmap f dat)
     fmap f (NoMacro instr) = NoMacro (fmap f instr)
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
     deriving (Show, Read, Enum, Eq, Ord, Num)
 
--- GCode - Just a synonym for a map containing Positions and their Instructions
-type GCode instr = M.Map Position (instr Position)
-type Code = GCode Instr
+-- GCode - A synonym for a map containing Positions and their Instructions
+-- The "label" type parameter is for jump instructions that have an unfound
+-- target in the original assembly.
+type GCode instr label = M.Map Position (instr (Either label Position))
+type Code label = GCode Instr label
 
 -- GAssembly is a list of instructions, each with an optional label
 -- src/Register/Samples.hs contains an example of handwritten assembly
@@ -91,11 +98,14 @@ type MGAssembly instr = GAssembly (Macro instr)
 type MAssembly = MGAssembly Instr
 
 -- Turn assembly into code
-assemble :: (Ord label, Functor instr) => GAssembly instr label -> GCode instr
+assemble :: (Ord label, Functor instr) => GAssembly instr label -> GCode instr label
 assemble (Assembly assembly)
   = M.fromList $ zip [0..] $ map (f . snd) assembly
     where
-    f = fmap $ fromMaybe (-1) . (labelIndices !?)
+    f = fmap $ \label -> toEither label $ labelIndices !? label
+    -- If there is no value, default to Left def
+    toEither def Nothing = Left def
+    toEither _ (Just y) = Right y
     -- Calculate the index for each label
     labelIndices
       = M.fromList
@@ -128,31 +138,63 @@ mergeTwo :: (Functor instr)
          => GAssembly instr label1 -> GAssembly instr label2 -> GAssembly instr (Either label1 label2)
 mergeTwo a b = join (fmap Left a) (fmap Right b)
 
+-- Submachines encapsulate the concept of running a register machine inside of
+-- a single register machine
+-- They are useful for defining macros
+data Submachine instr label
+    = Submachine 
+    { -- The GCode defining the machine
+      gcode :: GCode instr label
+      -- Registers to take as inputs from the current machine state, mapped to R0, R1, etc.
+    , inputRegs :: [Register]
+    , inputLabels :: M.Map label label
+      -- Registers to send as outputs (key is register in macro to be read
+      -- from, value is register in macro to be sent to)
+    , resultRegs :: M.Map Register Register
+    }
+
+-- Useful for register mapping in submachine macros
+restrictWithMap :: Ord k => M.Map k k -> M.Map k a -> M.Map k a
+restrictWithMap keysMapping = M.mapMaybeWithKey (\k a -> const a <$> M.lookup k keysMapping)
+
+restrictWithList :: (Ord k, Enum k, Num k) => [k] -> M.Map k a -> M.Map k a
+restrictWithList keys = restrictWithMap keysMapping
+    where
+        keysMapping = M.fromList $ zip keys [0..]
+
 -- Resolve the macros in an assembly
-resolveMacros :: (Functor instr)
-              => (String -> [Either Register labelInput] -> GAssembly instr labelInput)
-              -> MGAssembly instr label -> GAssembly instr label
-resolveMacros = undefined
+type f :-> g = forall a. f a -> g a
+
+resolveMacros :: (Functor i1, Functor i2)
+                 -- A natural transformation between MacroData and Submachine,
+                 -- with no awareness of labels
+              => (MacroData :-> Submachine i1) 
+              -> GAssembly (Macro i2) label
+              -> GAssembly (Sum (Submachine i1) i2) label
+resolveMacros converter = Assembly . map (fmap convert) . unassembly
+    where
+        convert (Macro dat) = InL $ converter dat
+        convert (NoMacro instr) = InR instr
 
 -- Machine - puts all of the types together
 -- We keep the instruction and value types general so that we can manipulate
 -- any codeable value later, and upgrade our instruction set to have oracles
 -- and macros
-data GMachine instr values
+data GMachine label instr values
     = GM
-    { _instructions :: GCode instr
-    , _state :: GMachineState values
+    { _instructions :: GCode instr label
+    , _state :: GMachineState label values
     }
 
 -- Separate out machine state so that separate instructions can manipulate the
 -- same state (refer to Instruction typeclass for Sum)
-data GMachineState values
+data GMachineState label values
     = GMState
     { _registers :: M.Map Register values
-    , _position :: Position
+    , _position :: Either label Position
     }
 
-type Machine = GMachine Instr Integer
+type Machine label = GMachine label Instr Integer
 
 -- Create lenses for easily getting/setting/modifying parts of a machine
 L.makeLenses ''GMachine
@@ -163,15 +205,18 @@ pattern GMachineAll _instructions _registers _position <- GM _instructions (GMSt
     GMachineAll _instructions _registers _position = GM _instructions (GMState _registers _position)
 
 -- Get the current instruction of the machine, if there is any at the machine position
-instruction :: GMachine instr values -> Maybe (instr Position)
-instruction (GMachineAll instructions _ position) = instructions !? position
+instruction :: GMachine label instr values -> Maybe (instr (Either label Position))
+instruction (GMachineAll instructions _ position)
+  = case position of
+      Left e -> Nothing
+      Right p -> instructions !? p
 
 -- Lens for taking a machine to a single register value
-lens :: (Default value) => Register -> L.Lens' (GMachine instr value) value
+lens :: (Default value) => Register -> L.Lens' (GMachine label instr value) value
 lens r = state . registers . sublens r
 
 -- Lens for taking a machine state to a single register value
-statelens :: (Default value) => Register -> L.Lens' (GMachineState value) value
+statelens :: (Default value) => Register -> L.Lens' (GMachineState label value) value
 statelens r = registers . sublens r
 
 -- Lens for taking a map of register values to a single register value
@@ -183,9 +228,9 @@ sublens r = L.lens (fromMaybe def . M.lookup r) (\m i -> M.insert r i m)
 -- We also define the Instruction typeclass, which represents instructions
 -- which can be interpreted to transform a GMachine
 class Instruction instr operands where
-    interpret :: instr Position
-              -> GMachineState operands
-              -> GMachineState operands
+    interpret :: instr (Either label Position)
+              -> GMachineState label operands
+              -> GMachineState label operands
 
 -- If we have two Instructions, their sum is also a valid instruction
 instance (Instruction i1 a, Instruction i2 a) => Instruction (Sum i1 i2) a where
@@ -204,49 +249,35 @@ instance Instruction Instr Integer where
 
             else machine                        -- If the register is not 0 / undefined...
                     & L.over reg pred               -- Decrement the register
-                    & L.over position succ          -- Go to the successive position
+                    & L.over position (fmap succ)   -- Go to the successive position
 
       Inc (statelens -> reg)                -- If the instruction is an increment...
         -> machine
             & L.over reg succ                   -- Increment the register
-            & L.over position succ              -- Increment the position
+            & L.over position (fmap succ)       -- Increment the position
 
--- Submachines encapsulate the concept of running a register machine inside of
--- a single register machine
--- They are useful for defining macros
-data Submachine instr labels
-    = Submachine 
-    { -- The GCode defining the machien
-      gcode :: GCode instr
-      -- Registers to take as inputs from the current machine state, mapped to R0, R1, etc.
-    , inputRegs :: [Register]
-      -- Registers to send as outputs (key is register in macro to be read
-      -- from, value is register in macro to be sent to)
-    , resultRegs :: M.Map Register Register
-    }
-
-transformWithMap :: Ord k => M.Map k k -> M.Map k a -> M.Map k a
-transformWithMap keysMapping = M.mapMaybeWithKey (\k a -> const a <$> M.lookup k keysMapping)
-
-restrictWithList :: (Ord k, Enum k, Num k) => [k] -> M.Map k a -> M.Map k a
-restrictWithList keys = transformWithMap keysMapping
-    where
-        keysMapping = M.fromList $ zip keys [0..]
-
+-- We also define further that Submachines are instructions too
 instance (Instruction instr values, Default values) => Instruction (Submachine instr) values where
     interpret (Submachine {..}) machinestate
       = machinestate
               -- Overwrite registers in machine that were set in the macro
             & L.over registers (M.union finalRegisters)
               -- Increment the current position
-            & L.over position succ
+            & L.over position changePosition
         where
             initialState = GMState (restrictWithList inputRegs $ _registers machinestate)
-                                   (Position 0)
+                                   (Right $ Position 0)
             finalMachine = run $ GM gcode initialState
             finalRegisters = finalMachine
                            & _state & _registers
-                           & transformWithMap resultRegs
+                           & restrictWithMap resultRegs
+            changePosition = case finalMachine & _state & _position of
+                               -- If the submachine tried to exit to an invalid
+                               -- label, assume that label is a goto for the
+                               -- external machine
+                               Left x -> const x 
+                               -- Otherwise, just increment the position
+                               Right _ -> fmap succ
 
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
@@ -286,12 +317,9 @@ parseMacro label inst = choice [macro, fmap NoMacro inst]
         string "macro"
         sp
         name <- identifier
-        args <- many arg
-        pure $ Macro name args
-
-    arg = do
-        sp
-        choice [fmap Left register, fmap Right labelArgument]
+        registers <- many $ sp >> register
+        labels <- many $ sp >> labelArgument
+        pure $ Macro $ MacroData name registers labels
 
     labelArgument = do
         char '#'
@@ -329,7 +357,7 @@ instance Read1 Instr where
     liftReadsPrec readsPrec _ _ = readP_to_S $ parseInstr (readS_to_P (readsPrec 10))
 
 -- Parser for assembly with parseable labels and parseable instructions
-parseGAssembly :: forall instr label. 
+parseGAssembly :: forall instr label.
                   ReadP (instr label)
                -> ReadP label
                -> ReadP (GAssembly instr label)
@@ -361,7 +389,7 @@ instance (Read1 instr, Read label) => Read (GAssembly instr label) where
     readsPrec _ = readP_to_S $ parseGAssembly (readS_to_P $ liftReadsPrec readsPrec readList 10) (readS_to_P reads)
 
 -- Define read instance for GMachine
-instance (Functor instr, Read1 instr, Read values) => Read (GMachine instr values) where
+instance (Functor instr, Read1 instr, Read values) => Read (GMachine Label instr values) where
     readsPrec _ = readP_to_S $ do
         -- Parse 0 or more registers
         string "registers"
@@ -372,7 +400,7 @@ instance (Functor instr, Read1 instr, Read values) => Read (GMachine instr value
         -- Parse assembly
         assembly <- readS_to_P reads :: ReadP (GAssembly instr Label)
         -- Return machine initialized at Position 0
-        pure $ GMachineAll (assemble assembly) registers (Position 0)
+        pure $ GMachineAll (assemble assembly) registers (Right $ Position 0)
 
 -- ============================================================================
 -- ============================ PRINTING AND DEBUGGING ========================
@@ -380,16 +408,17 @@ instance (Functor instr, Read1 instr, Read values) => Read (GMachine instr value
 
 instance (Show (instr label), Show label) => Show (Macro instr label) where
     show (NoMacro x) = show x
-    show (Macro x args) = unwords $ ["Macro", show x] ++ map showArg args
+    show (Macro (MacroData x registers labels))
+      = unwords $ ["Macro", show x] ++ map show registers ++ map showLabel labels
         where
-            showArg (Left x) = show x
-            showArg (Right x) = '#' : show x
+            showLabel x = '#' : show x
 
 -- Debug will print out a machine as registers and instructions
 -- Optionally, if markPosition is set, it will put a '*' next to the line
 -- currently being evaluated.
-debug :: (Functor instr, Show (instr Integer), Show value)
-      => Bool -> GMachine instr value -> String
+debug :: forall label instr value.
+         (Functor instr, Show (instr String), Show value, Eq label, Show label)
+      => Bool -> GMachine label instr value -> String
 debug markPosition (GMachineAll _instructions _registers _position)
   = unlines $ registers : instructions
       where
@@ -404,10 +433,13 @@ debug markPosition (GMachineAll _instructions _registers _position)
 
         -- Show instructions with line numbers and a '*' marking the current line
         instructions = fmap showLine $ M.toList _instructions
-        showLine (Position pos, instr)
-          = (if markPosition && pos == unpos _position then "*" else " ")
+        showLine :: (Position, instr (Either label Position)) -> String
+        showLine (pos, instr)
+          = (if markPosition && Right pos == _position then "*" else " ")
           ++ pad (show pos)
-          ++ " : " ++ show (fmap unpos instr)
+          ++ " : " ++ show (fmap showLabel instr)
+        showLabel (Left label) = '!' : show label
+        showLabel (Right pos) = show $ unpos pos
 
 -- Report the registers as according to the coursework spec
 reportRegisters :: (Show value, Default value) => M.Map Register value -> String
@@ -421,9 +453,8 @@ reportRegisters positions = "registers " ++ unwords regs
 
 -- Define the show instance of the machine as show without the '*' marking the
 -- position
--- This allows read and show to go between the same machine and source Code
-instance (Functor instr, Show (instr Integer), Show value) 
-      => Show (GMachine instr value) where
+instance (Eq label, Show label, Functor instr, Show (instr String), Show value) 
+      => Show (GMachine label instr value) where
     show = debug False
 
 -- ============================================================================
@@ -432,7 +463,7 @@ instance (Functor instr, Show (instr Integer), Show value)
 
 -- Make a single step of the machine
 next :: (Instruction instr value)
-     => GMachine instr value -> Maybe (GMachine instr value)
+     => GMachine label instr value -> Maybe (GMachine label instr value)
 next machine = do
     currInstr <- instruction machine
     pure $ machine & state %~ interpret currInstr
@@ -448,5 +479,5 @@ toListF Nothing  = F.Nil
 -- Using recursion-schemes lets us eventually upgrade our machine transitions
 -- to be probabilistic
 run :: (Instruction instr value)
-    => GMachine instr value -> GMachine instr value
+    => GMachine label instr value -> GMachine label instr value
 run initial = last $ initial : F.unfold (toListF . next) initial
