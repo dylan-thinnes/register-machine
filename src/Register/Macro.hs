@@ -1,1 +1,161 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RecordWildCards #-}
+
 module Register.Macro where
+
+import Register
+
+import qualified Data.Map as M
+import Data.Map ((!?))
+import Data.Function ((&))
+
+import Data.Functor.Classes
+import Data.Functor.Identity
+import Data.Functor.Compose
+
+import Text.ParserCombinators.ReadP
+
+import Data.Default
+
+import qualified Control.Lens as L
+import Control.Lens ((^.), (.~), (%~))
+
+import Data.Bitraversable
+import Data.Bifunctor
+
+-- Add the MacroData instruction, and sum it with any instruction using Macro
+type Macro instr = InstrSum MacroData instr
+pattern YMacro x <- InstrL x where
+    YMacro x = InstrL x
+pattern NMacro x <- InstrR x where
+    NMacro x = InstrR x
+
+data MacroData label
+    = MacroData
+    { name :: String
+    , macroRegisters :: [Register]
+    , macroLabels :: [label]
+    }
+    deriving (Eq, Ord, Functor)
+
+-- Submachines encapsulate the concept of running a register machine inside of
+-- a single register machine
+-- They are useful for defining macros
+data Submachine instr label
+    = Submachine 
+    { -- The GCode defining the machine
+      gcode :: GCode instr label
+      -- Registers to take as inputs from the current machine state, mapped to R0, R1, etc.
+    , inputRegs :: M.Map Register Register
+    , inputLabels :: M.Map label label
+      -- Registers to send as outputs (key is register in macro to be read
+      -- from, value is register in macro to be sent to)
+    , resultRegs :: M.Map Register Register
+    }
+
+-- Resolve the macros in an assembly using a natural transformation
+-- This transformation is composed with an arbitrary monad (e.g. IO)
+resolveMacros :: (Functor i1, Functor i2, Monad m)
+                 -- The natural transformation between MacroData and
+                 -- Submachine, with no awareness of labels
+              => (MacroData :-> Compose m (Submachine i1))
+                 -- The final transformation from Macro to InstrSum and Submachine
+              -> GAssembly (Macro i2) label
+              -> m (GAssembly (InstrSum (Submachine i1) i2) label)
+resolveMacros converter
+  = let (|>) = flip (.) -- Simple "composition in reverse", just this once
+     in  -- Unwrap
+         unassembly
+         -- Run the following functions on every Macro:
+      |> map ( fmap
+          (  natTrans converter id   -- Run the natural transformation
+          |> sumToEither             -- Temporarily turn the sum into an either
+          |> bimap getCompose pure   -- Turn both values into m monad
+          |> bitraverse id id        -- Bitraverse the monad out from the either
+          |> fmap eitherToSum        -- Turn the either back into a sum
+          ))
+         -- Sequence out the monad in one step w/ Compose
+      |> Compose |> sequence |> fmap getCompose
+         -- Rewrap within the monad
+      |> fmap Assembly
+
+-- Resolve the macros with a pure natural transformation
+resolveMacrosPure :: (Functor i1, Functor i2)
+                     -- The natural transformation between MacroData and
+                     -- Submachine, with no awareness of labels
+                  => (MacroData :-> Submachine i1)
+                     -- The final transformation from Macro to InstrSum and Submachine
+                  -> GAssembly (Macro i2) label
+                  -> GAssembly (InstrSum (Submachine i1) i2) label
+resolveMacrosPure converter = runIdentity . resolveMacros (Compose . Identity . converter)
+
+-- We also define further that Submachines are instructions too
+instance (Instruction instr values, Default values) => Instruction (Submachine instr) values where
+    interpret (Submachine {..}) machinestate
+      = machinestate
+              -- Overwrite registers in machine that were set in the macro
+            & L.over registers (M.union finalRegisters)
+              -- Increment the current position
+            & L.over position changePosition
+        where
+            -- Useful for register mapping in submachine macros
+            restrictWithMap :: Ord k => M.Map k k -> M.Map k a -> M.Map k a
+            restrictWithMap keysMapping
+              = M.mapMaybeWithKey (\k a -> const a <$> M.lookup k keysMapping)
+
+            -- Define the initial state
+            initialState = GMState (restrictWithMap inputRegs $ _registers machinestate)
+                                   (Right $ Position 0)
+
+            -- Run the machine to its final state, query the registers and the
+            -- final position
+            finalMachine = run $ GM gcode initialState
+            finalRegisters = finalMachine
+                           & _state & _registers
+                           & restrictWithMap resultRegs
+
+            -- If the final position is Left, assume that was a jump for a
+            -- label to the external machine
+            changePosition = case finalMachine & _state & _position of
+                               -- If the submachine tried to exit to an invalid
+                               -- label, assume that label is a goto for the
+                               -- external machine
+                               Left x -> const x 
+                               -- Otherwise, just increment the position
+                               Right _ -> fmap succ
+
+-- Parse in a macro instruction, given a parser for the underlying label and instruction
+parseMacro :: ReadP label -> ReadP (instr label) -> ReadP (Macro instr label)
+parseMacro label inst = choice [macro, fmap NMacro inst]
+    where
+    macro = do
+        string "macro"
+        sp
+        name <- identifier
+        registers <- many $ sp >> register
+        labels <- many $ sp >> labelArgument
+        pure $ YMacro $ MacroData name registers labels
+
+    labelArgument = do
+        char '#'
+        label
+
+instance (Read1 instr) => Read1 (Macro instr) where
+    liftReadsPrec readsPrec readList _
+      = readP_to_S $ parseMacro (readS_to_P $ readsPrec 10)
+      $ readS_to_P $ liftReadsPrec readsPrec readList 10
+
+-- Show a macro
+instance (Show (instr label), Show label) => Show (Macro instr label) where
+    show (NMacro x) = show x
+    show (YMacro (MacroData x registers labels))
+      = unwords $ ["Macro", show x] ++ map show registers ++ map showLabel labels
+        where
+            showLabel x = '#' : show x
+
