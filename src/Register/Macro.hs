@@ -130,6 +130,21 @@ instance (Instruction instr values, Default values) => Instruction (Submachine i
                                -- Otherwise, just increment the position
                                Right _ -> fmap succ
 
+-- Finally, we define pure submachines, which would not be able to jump outside
+-- of their own instruction set, and better encapsulate the concept of running
+-- a coded RM inside a single register of a universal RM. The implementation
+-- for "interpret" is identical to that of ordinary "macro" submachines, but
+-- any goto behaviour is ignored.
+newtype PureSubmachine instr values = Pure (Submachine instr values)
+
+instance (Instruction instr values, Default values)
+       => Instruction (PureSubmachine instr) values where
+    interpret (Pure submachine) machinestate
+      = machinestate
+            & interpret submachine
+              -- Overwrite goto behaviour from running the submachine, succ instead
+            & L.set position (fmap succ $ _position machinestate)
+
 -- Parse in a macro instruction, given a parser for the underlying label and instruction
 parseMacro :: ReadP label -> ReadP (instr label) -> ReadP (Macro instr label)
 parseMacro label inst = choice [macro, fmap NMacro inst]
