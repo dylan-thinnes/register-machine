@@ -58,10 +58,26 @@ data Instr label = Decjz Register label | Inc Register
 newtype Label = Label String
     deriving (Show, Eq, Ord)
 
-data Macro instr label
-    = Macro (MacroData label)
-    | NoMacro (instr label)
-    deriving (Eq, Ord)
+-- Add InstrSum constructors, which creates a new instruction set from two
+-- previous instruction sets
+newtype InstrSum f g a = InstrSum (Sum f g a)
+    deriving (Functor)
+pattern InstrL x <- InstrSum (InL x) where
+    InstrL x = InstrSum (InL x)
+pattern InstrR x <- InstrSum (InR x) where
+    InstrR x = InstrSum (InR x)
+
+type f :-> g = forall a. f a -> g a
+
+natTrans :: (f1 :-> f2) -> (g1 :-> g2) -> InstrSum f1 g1 :-> InstrSum f2 g2
+natTrans f _ (InstrL x) = InstrL $ f x
+natTrans _ g (InstrR x) = InstrR $ g x
+
+type Macro instr = InstrSum MacroData instr
+pattern YMacro x <- InstrL x where
+    YMacro x = InstrL x
+pattern NMacro x <- InstrR x where
+    NMacro x = InstrR x
 
 data MacroData label
     = MacroData
@@ -70,10 +86,6 @@ data MacroData label
     , macroLabels :: [label]
     }
     deriving (Eq, Ord, Functor)
-
-instance (Functor instr) => Functor (Macro instr) where
-    fmap f (Macro dat) = Macro (fmap f dat)
-    fmap f (NoMacro instr) = NoMacro (fmap f instr)
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
@@ -162,19 +174,14 @@ restrictWithList keys = restrictWithMap keysMapping
     where
         keysMapping = M.fromList $ zip keys [0..]
 
--- Resolve the macros in an assembly
-type f :-> g = forall a. f a -> g a
-
+-- Resolve the macros in an assembly using a natural transformation, under
 resolveMacros :: (Functor i1, Functor i2)
                  -- A natural transformation between MacroData and Submachine,
                  -- with no awareness of labels
-              => (MacroData :-> Submachine i1) 
+              => (MacroData :-> Submachine i1)
               -> GAssembly (Macro i2) label
-              -> GAssembly (Sum (Submachine i1) i2) label
-resolveMacros converter = Assembly . map (fmap convert) . unassembly
-    where
-        convert (Macro dat) = InL $ converter dat
-        convert (NoMacro instr) = InR instr
+              -> GAssembly (InstrSum (Submachine i1) i2) label
+resolveMacros converter = Assembly . map (fmap $ natTrans converter id) . unassembly
 
 -- Machine - puts all of the types together
 -- We keep the instruction and value types general so that we can manipulate
@@ -233,9 +240,9 @@ class Instruction instr operands where
               -> GMachineState label operands
 
 -- If we have two Instructions, their sum is also a valid instruction
-instance (Instruction i1 a, Instruction i2 a) => Instruction (Sum i1 i2) a where
-    interpret (InL instr) machinestate = interpret instr machinestate
-    interpret (InR instr) machinestate = interpret instr machinestate
+instance (Instruction i1 a, Instruction i2 a) => Instruction (InstrSum i1 i2) a where
+    interpret (InstrL instr) machinestate = interpret instr machinestate
+    interpret (InstrR instr) machinestate = interpret instr machinestate
 
 -- Now we define that Instrs can manipulate any integer value, which includes
 -- plain old integers
@@ -309,9 +316,9 @@ label = fmap Label identifier
 parseStringAssembly :: ReadP (Assembly Label)
 parseStringAssembly = parseGAssembly (parseInstr label) label
 
--- Parse in a macro, given a parser for underlying label and instruction
+-- Parse in a macro instruction, given a parser for the underlying label and instruction
 parseMacro :: ReadP label -> ReadP (instr label) -> ReadP (Macro instr label)
-parseMacro label inst = choice [macro, fmap NoMacro inst]
+parseMacro label inst = choice [macro, fmap NMacro inst]
     where
     macro = do
         string "macro"
@@ -319,7 +326,7 @@ parseMacro label inst = choice [macro, fmap NoMacro inst]
         name <- identifier
         registers <- many $ sp >> register
         labels <- many $ sp >> labelArgument
-        pure $ Macro $ MacroData name registers labels
+        pure $ YMacro $ MacroData name registers labels
 
     labelArgument = do
         char '#'
@@ -407,8 +414,8 @@ instance (Functor instr, Read1 instr, Read values) => Read (GMachine Label instr
 -- ============================================================================
 
 instance (Show (instr label), Show label) => Show (Macro instr label) where
-    show (NoMacro x) = show x
-    show (Macro (MacroData x registers labels))
+    show (NMacro x) = show x
+    show (YMacro (MacroData x registers labels))
       = unwords $ ["Macro", show x] ++ map show registers ++ map showLabel labels
         where
             showLabel x = '#' : show x
