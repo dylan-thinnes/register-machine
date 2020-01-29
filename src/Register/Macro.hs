@@ -6,6 +6,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Register.Macro where
 
@@ -17,7 +18,6 @@ import Data.Function ((&))
 
 import Data.Functor.Classes
 import Data.Functor.Identity
-import Data.Functor.Compose
 
 import Text.ParserCombinators.ReadP
 
@@ -53,47 +53,39 @@ data Submachine instr label
       gcode :: GCode instr label
       -- Registers to take as inputs from the current machine state, mapped to R0, R1, etc.
     , inputRegs :: M.Map Register Register
-    , inputLabels :: M.Map label label
       -- Registers to send as outputs (key is register in macro to be read
       -- from, value is register in macro to be sent to)
     , resultRegs :: M.Map Register Register
     }
 
--- Resolve the macros in an assembly using a natural transformation
+instance (Functor instr) => Functor (Submachine instr) where
+    fmap f (Submachine {..})
+        = Submachine
+            { resultRegs, inputRegs
+            , gcode = fmap (fmap (bimap f id)) gcode
+            }
+
+-- Resolve the macros in an assembly to Submachines using a natural
+-- transformation
 -- This transformation is composed with an arbitrary monad (e.g. IO)
 resolveMacros :: (Functor i1, Functor i2, Monad m)
                  -- The natural transformation between MacroData and
                  -- Submachine, with no awareness of labels
-              => (MacroData :-> Compose m (Submachine i1))
+              => (forall label. MacroData label -> m (Submachine i1 label))
                  -- The final transformation from Macro to InstrSum and Submachine
               -> GAssembly (Macro i2) label
               -> m (GAssembly (InstrSum (Submachine i1) i2) label)
-resolveMacros converter
-  = let (|>) = flip (.) -- Simple "composition in reverse", just this once
-     in  -- Unwrap
-         unassembly
-         -- Run the following functions on every Macro:
-      |> map ( fmap
-          (  natTrans converter id   -- Run the natural transformation
-          |> sumToEither             -- Temporarily turn the sum into an either
-          |> bimap getCompose pure   -- Turn both values into m monad
-          |> bitraverse id id        -- Bitraverse the monad out from the either
-          |> fmap eitherToSum        -- Turn the either back into a sum
-          ))
-         -- Sequence out the monad in one step w/ Compose
-      |> Compose |> sequence |> fmap getCompose
-         -- Rewrap within the monad
-      |> fmap Assembly
+resolveMacros converter = convertInstrs $ injLNatTrans converter
 
 -- Resolve the macros with a pure natural transformation
 resolveMacrosPure :: (Functor i1, Functor i2)
                      -- The natural transformation between MacroData and
                      -- Submachine, with no awareness of labels
-                  => (MacroData :-> Submachine i1)
+                  => (forall label. MacroData label -> Submachine i1 label)
                      -- The final transformation from Macro to InstrSum and Submachine
                   -> GAssembly (Macro i2) label
                   -> GAssembly (InstrSum (Submachine i1) i2) label
-resolveMacrosPure converter = runIdentity . resolveMacros (Compose . Identity . converter)
+resolveMacrosPure converter = runIdentity . resolveMacros (Identity . converter)
 
 -- We also define further that Submachines are instructions too
 instance (Instruction instr values, Default values) => Instruction (Submachine instr) values where

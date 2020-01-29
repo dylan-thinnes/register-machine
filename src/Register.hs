@@ -37,9 +37,11 @@ import Data.Default
 
 import qualified Data.Functor.Foldable as F
 import Data.Functor.Sum
+import Data.Functor.Compose
 
 import Data.Functor.Classes
 import Data.Bitraversable
+import Data.Bifunctor
 
 -- ============================================================================
 -- ================================ DATA TYPES ================================
@@ -64,7 +66,7 @@ newtype Label = Label String
 -- Add InstrSum constructors, which creates a new instruction set from two
 -- previous instruction sets
 newtype InstrSum f g a = InstrSum (Sum f g a)
-    deriving (Functor)
+    deriving (Functor, Foldable, Traversable)
 pattern InstrL x <- InstrSum (InL x) where
     InstrL x = InstrSum (InL x)
 pattern InstrR x <- InstrSum (InR x) where
@@ -89,6 +91,16 @@ eitherToSum (Right x) = InstrR x
 
 extractEitherF :: (Applicative f) => Either (f a) (f b) -> f (Either a b)
 extractEitherF = bitraverse id id
+
+injLNatTrans :: (Applicative m)
+             => (forall label. i1 label -> m (i2 label))
+             -> (forall label. InstrSum i1 right label -> m (InstrSum i2 right label))
+injLNatTrans f = fmap eitherToSum . extractEitherF . bimap f pure . sumToEither
+
+injRNatTrans :: (Applicative m)
+             => (forall label. i1 label -> m (i2 label))
+             -> (forall label. InstrSum left i1 label -> m (InstrSum left i2 label))
+injRNatTrans f = fmap eitherToSum . extractEitherF . bimap pure f . sumToEither
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
@@ -151,6 +163,27 @@ mergeTwo :: (Functor instr)
          => GAssembly instr label1 -> GAssembly instr label2
          -> GAssembly instr (Either label1 label2)
 mergeTwo a b = join (fmap Left a) (fmap Right b)
+
+-- Convert one type of intruction to another in an assembly using a natural
+-- transformation
+-- This transformation is composed with an arbitrary monad (e.g. IO)
+convertInstrs :: (Functor i1, Functor i2, Monad m)
+                 -- The natural transformation between MacroData and
+                 -- Submachine, with no awareness of labels
+              => (forall label. i1 label -> m (i2 label))
+                 -- The final transformation from Macro to InstrSum and Submachine
+              -> GAssembly i1 label
+              -> m (GAssembly i2 label)
+convertInstrs converter
+  = let (|>) = flip (.) -- Simple "composition in reverse", just this once
+     in  -- Unwrap
+         unassembly
+         -- Run the following functions on every Macro:
+      |> map (fmap converter)
+         -- Sequence out the monad nested in [(e, a)] in one step w/ Compose
+      |> Compose |> sequence |> fmap getCompose
+         -- Rewrap within the monad
+      |> fmap Assembly
 
 -- Machine - puts all of the types together
 -- We keep the instruction and value types general so that we can manipulate
