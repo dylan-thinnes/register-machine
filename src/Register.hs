@@ -72,15 +72,7 @@ pattern InstrL x <- InstrSum (InL x) where
 pattern InstrR x <- InstrSum (InR x) where
     InstrR x = InstrSum (InR x)
 
-type f :-> g = forall a. f a -> g a
-
-trans :: (f1 a -> f2 b) -> (g1 a -> g2 b) -> InstrSum f1 g1 a -> InstrSum f2 g2 b
-trans f _ (InstrL x) = InstrL $ f x
-trans _ g (InstrR x) = InstrR $ g x
-
-natTrans :: (f1 :-> f2) -> (g1 :-> g2) -> InstrSum f1 g1 :-> InstrSum f2 g2
-natTrans = trans
-
+-- Simple isomorphism between InstrSum and Either
 sumToEither :: InstrSum f g a -> Either (f a) (g a)
 sumToEither (InstrL x) = Left x
 sumToEither (InstrR x) = Right x
@@ -89,18 +81,34 @@ eitherToSum :: Either (f a) (g a) -> InstrSum f g a
 eitherToSum (Left x) = InstrL x
 eitherToSum (Right x) = InstrR x
 
-extractEitherF :: (Applicative f) => Either (f a) (f b) -> f (Either a b)
-extractEitherF = bitraverse id id
+-- Type of natural transformations
+type f :-> g = forall a. f a -> g a
+
+-- Define full transformation and natural transformations using the isomorphism
+trans :: (f1 a -> f2 b) -> (g1 a -> g2 b) -> InstrSum f1 g1 a -> InstrSum f2 g2 b
+trans f g = eitherToSum . bimap f g . sumToEither
+
+natTrans :: (f1 :-> f2) -> (g1 :-> g2) -> InstrSum f1 g1 :-> InstrSum f2 g2
+natTrans = trans
+
+appNatTrans :: (Applicative m)
+            => (forall label. f1 label -> m (f2 label))
+            -> (forall label. g1 label -> m (g2 label))
+            -> (forall label. InstrSum f1 g1 label -> m (InstrSum f2 g2 label))
+appNatTrans f g = fmap eitherToSum . extractEitherF . bimap f g . sumToEither
+    where
+    extractEitherF :: (Applicative f) => Either (f a) (f b) -> f (Either a b)
+    extractEitherF = bitraverse id id
 
 injLNatTrans :: (Applicative m)
              => (forall label. i1 label -> m (i2 label))
              -> (forall label. InstrSum i1 right label -> m (InstrSum i2 right label))
-injLNatTrans f = fmap eitherToSum . extractEitherF . bimap f pure . sumToEither
+injLNatTrans f = appNatTrans f pure
 
 injRNatTrans :: (Applicative m)
              => (forall label. i1 label -> m (i2 label))
              -> (forall label. InstrSum left i1 label -> m (InstrSum left i2 label))
-injRNatTrans f = fmap eitherToSum . extractEitherF . bimap pure f . sumToEither
+injRNatTrans g = appNatTrans pure g
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
