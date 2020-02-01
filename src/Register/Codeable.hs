@@ -1,6 +1,7 @@
 module Register.Codeable where
 
 import Register
+import Register.Instr
 
 import Data.Function ((&))
 import Data.Numbers.Primes (primes, primeFactors)

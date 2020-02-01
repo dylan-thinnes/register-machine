@@ -1,6 +1,7 @@
 module Register.Samples where
 
 import Register
+import Register.Instr
 import Register.Macro
 
 import qualified Data.Map as M

@@ -54,17 +54,13 @@ newtype Register = Register Integer
 instance Show Register where
     show (Register r) = 'r' : show r
 
--- Instructions, with choice of any value for labels
-data Instr label = Decjz Register label | Inc Register
-    deriving (Show, Read, Eq, Ord, Functor)
-
 -- Simple string labels, using a newtype wrapper so we can write custom read
 -- parsers for them
 newtype Label = Label String
     deriving (Show, Eq, Ord)
 
 -- Add InstrSum constructors, which creates a new instruction set from two
--- previous instruction sets
+-- previous instruction sets, f and g
 newtype InstrSum f g a = InstrSum (Sum f g a)
     deriving (Functor, Foldable, Traversable)
 pattern InstrL x <- InstrSum (InL x) where
@@ -118,7 +114,6 @@ newtype Position = Position { unpos :: Integer }
 -- The "label" type parameter is for jump instructions that have an unfound
 -- target in the original assembly.
 type GCode instr label = M.Map Position (instr (Either label Position))
-type Code label = GCode Instr label
 
 -- GAssembly is a list of instructions, each with an optional label
 -- src/Register/Samples.hs contains an example of handwritten assembly
@@ -127,8 +122,6 @@ type Code label = GCode Instr label
 -- resolving the labels to positions.
 newtype GAssembly instr label = Assembly { unassembly :: [(Maybe label, instr label)] }
     deriving (Show, Eq, Ord, Functor, Semigroup, Monoid, Foldable, Traversable)
-
-type Assembly = GAssembly Instr
 
 -- Turn assembly into code
 assemble :: (Ord label, Functor instr) => GAssembly instr label -> GCode instr label
@@ -211,8 +204,6 @@ data GMachineState label values
     , _position :: Either label Position
     }
 
-type Machine label = GMachine label Instr Integer
-
 -- Create lenses for easily getting/setting/modifying parts of a machine
 L.makeLenses ''GMachine
 L.makeLenses ''GMachineState
@@ -254,25 +245,6 @@ instance (Instruction i1 a, Instruction i2 a) => Instruction (InstrSum i1 i2) a 
     interpret (InstrL instr) machinestate = interpret instr machinestate
     interpret (InstrR instr) machinestate = interpret instr machinestate
 
--- Now we define that Instrs can manipulate any integer value, which includes
--- plain old integers
-instance Instruction Instr Integer where
-    interpret instr machine = case instr of
-      Decjz (statelens -> reg) label        -- If the instruction is a jump...
-        -> if L.view reg machine == 0
-            then machine                        -- If the register is 0 / undefined...
-                    & L.set  reg 0                  -- Set the register to 0
-                    & L.set  position label         -- Jump to the label
-
-            else machine                        -- If the register is not 0 / undefined...
-                    & L.over reg pred               -- Decrement the register
-                    & L.over position (fmap succ)   -- Go to the successive position
-
-      Inc (statelens -> reg)                -- If the instruction is an increment...
-        -> machine
-            & L.over reg succ                   -- Increment the register
-            & L.over position (fmap succ)       -- Increment the position
-
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
 -- ============================================================================
@@ -299,35 +271,8 @@ identifier = liftM2 (:) (satisfy isAlpha) (munch isAlphaNum)
 label :: ReadP Label
 label = fmap Label identifier
 
--- Parse assembly with a string
-parseStringAssembly :: ReadP (Assembly Label)
-parseStringAssembly = parseGAssembly (parseInstr label) label
-
 -- Parse in a register
 register = char 'r' >> fmap Register (readS_to_P reads)
-
--- Parse in a regular instruction
-parseInstr :: ReadP label -> ReadP (Instr label)
-parseInstr label = choice [inc, decjz]
-    where
-    -- Parse in an inc
-    inc = do
-        string "inc"
-        sp
-        r <- register
-        pure $ Inc r
-
-    -- Parse in a decjz
-    decjz = do
-        string "decjz"
-        sp
-        r <- register
-        sp
-        label <- label
-        pure $ Decjz r label
-
-instance Read1 Instr where
-    liftReadsPrec readsPrec _ _ = readP_to_S $ parseInstr (readS_to_P (readsPrec 10))
 
 -- Parser for assembly with parseable labels and parseable instructions
 parseGAssembly :: forall instr label.

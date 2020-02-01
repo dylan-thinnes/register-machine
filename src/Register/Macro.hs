@@ -153,6 +153,7 @@ parseMacro label inst = choice [macro, fmap NMacro inst]
         char '#'
         label
 
+-- Read a macro
 instance (Read1 instr) => Read1 (Macro instr) where
     liftReadsPrec readsPrec readList _
       = readP_to_S $ parseMacro (readS_to_P $ readsPrec 10)

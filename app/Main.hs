@@ -1,6 +1,7 @@
 module Main where
 
 import Register
+import Register.Instr
 
 -- Read a machine from stdin, run it, then report its registers
 main :: IO ()
