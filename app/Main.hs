@@ -9,4 +9,4 @@ main = fmap read getContents >>= runCW
 
 -- Run machine and print according to coursework spec
 runCW :: Machine Label -> IO ()
-runCW machine = putStrLn $ reportRegisters $ _registers $ _state $ run machine
+runCW machine = putStrLn $ reportRegisters $ _registers $ _state $ runEnd machine

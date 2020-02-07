@@ -107,7 +107,7 @@ instance (Instruction instr values, Default values) => Instruction (Submachine i
 
             -- Run the machine to its final state, query the registers and the
             -- final position
-            finalMachine = run $ GM gcode initialState
+            finalMachine = runEnd $ GM gcode initialState
             finalRegisters = finalMachine
                            & _state & _registers
                            & restrictWithMap resultRegs

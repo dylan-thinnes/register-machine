@@ -37,11 +37,14 @@ import Data.Default
 
 import qualified Data.Functor.Foldable as F
 import Data.Functor.Sum
+import Data.Functor.Identity
 import Data.Functor.Compose
 
 import Data.Functor.Classes
 import Data.Bitraversable
 import Data.Bifunctor
+
+import Control.Comonad.Trans.Cofree
 
 -- ============================================================================
 -- ================================ DATA TYPES ================================
@@ -240,10 +243,23 @@ class Instruction instr operands where
               -> GMachineState label operands
               -> GMachineState label operands
 
--- If we have two Instructions, their sum is also a valid instruction
+-- If we have two Instructions, their InstrSum is also a valid instruction
 instance (Instruction i1 a, Instruction i2 a) => Instruction (InstrSum i1 i2) a where
     interpret (InstrL instr) machinestate = interpret instr machinestate
     interpret (InstrR instr) machinestate = interpret instr machinestate
+
+-- For future expansion with NRM, we have the InstructionF typeclass, which
+-- represents instructions which can put the register machine into a functor,
+-- which represents multiple states.
+class InstructionF f instr operands where
+    interpretF :: instr (Either label Position)
+              -> GMachineState label operands
+              -> f (GMachineState label operands)
+
+-- Determine that any ordinary Instruction instance can be turned into the
+-- InstructionF instance with Identity as "f"
+instance Instruction instr operands => InstructionF Identity instr operands where
+    interpretF instr = Identity . interpret instr
 
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
@@ -372,23 +388,42 @@ instance (Eq label, Show label, Functor instr, Show (instr String), Show value)
 -- ============================ RUNNING AND STEPPING ==========================
 -- ============================================================================
 
--- Make a single step of the machine
+-- Make a single step of the machine, optionally within a functor
+nextF :: (Functor f, InstructionF f instr value)
+      => GMachine label instr value
+      -> Compose Maybe f (GMachine label instr value)
+nextF machine = Compose $ do
+    currInstr <- instruction machine
+    let stateF = interpretF currInstr $ _state $ machine
+    pure $ stateF <&> \state -> machine { _state = state }
+
 next :: (Instruction instr value)
      => GMachine label instr value -> Maybe (GMachine label instr value)
-next machine = do
-    currInstr <- instruction machine
-    pure $ machine & state %~ interpret currInstr
+next = getComposeRid . nextF
 
--- Turn maybes into the base functor for a list
--- This lets us use recursion-schemes for unfolding the states of the machine
-toListF :: Maybe a -> F.ListF a a
-toListF (Just x) = F.Cons x x
-toListF Nothing  = F.Nil
+-- Turn a KCoalgebra into a KCoalgebra for Cofree Comonad's Base functor
+liftCofreeF :: (Functor f) => (a -> f b) -> a -> CofreeF f a b
+liftCofreeF f a = a :< f a
 
--- Unfold ListF Machine into [Machine], using recursion-schemes, then take the
--- last machine state
--- Using recursion-schemes lets us eventually upgrade our machine transitions
--- to be probabilistic
+curryCofreeF :: (Functor f) => (a -> c -> d) -> (f b -> c) -> CofreeF f a b -> d
+curryCofreeF f g (a :< b) = f a (g b)
+
+getComposeRid :: (Functor f) => Compose f Identity a -> f a
+getComposeRid = fmap runIdentity . getCompose
+getComposeLid :: Compose Identity g a -> g a
+getComposeLid = runIdentity . getCompose
+
+-- Unfold Machine into Cofree f Machine, using recursion-schemes
+runF :: (InstructionF f instr value, Functor f)
+     => GMachine label instr value
+     -> Cofree (Compose Maybe f) (GMachine label instr value)
+runF = F.ana $ Compose . Identity . liftCofreeF nextF
+
+-- Hylomorph the Cofree Maybe functor to a List
 run :: (Instruction instr value)
-    => GMachine label instr value -> GMachine label instr value
-run initial = last $ initial : F.unfold (toListF . next) initial
+    => GMachine label instr value -> [GMachine label instr value]
+run = F.hylo (curryCofreeF (:) (fromMaybe [] . getComposeRid)) (liftCofreeF nextF)
+
+runEnd :: (Instruction instr value)
+       => GMachine label instr value -> GMachine label instr value
+runEnd = last . run
