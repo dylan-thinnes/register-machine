@@ -399,7 +399,7 @@ debug markPosition (GMachineAll _instructions _registers _position)
 
 -- Report the registers as according to the coursework spec
 reportRegisters :: (Show value, Default value) => M.Map Register value -> String
-reportRegisters positions = "registers " ++ unwords regs
+reportRegisters positions = unwords $ "registers" : regs
     where
     -- Lookup the register for each position, defaulting to 0 if it isn't there
     regs = map (\r -> show $ L.view (sublens r) positions) regNums
