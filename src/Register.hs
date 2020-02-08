@@ -244,6 +244,11 @@ sublens r = L.lens (fromMaybe def . M.lookup r) (\m i -> M.insert r i m)
 -- Could use this sublens, but use of L.non means it removes keys w/ value 0
 -- sublens r = L.at r . L.non 0
 
+-- Transform the instructions to other instructions in a machine using a
+-- natural transformation
+transMachineInstrs :: (i1 :-> i2) -> GMachine label i1 values -> GMachine label i2 values
+transMachineInstrs transformation = instructions %~ fmap transformation
+
 -- We also define the Instruction typeclass, which represents instructions
 -- which can be interpreted to transform a GMachine
 class Instruction instr operands where
@@ -264,10 +269,22 @@ class InstructionF f instr operands where
               -> GMachineState label operands
               -> f (GMachineState label operands)
 
--- Determine that any ordinary Instruction instance can be turned into the
--- InstructionF instance with Identity as "f"
-instance Instruction instr operands => InstructionF Identity instr operands where
-    interpretF instr = Identity . interpret instr
+-- Any ordinary Instruction instance can be turned into a InstructionF instance
+-- for any Applicative functor if wrapped in the LiftedInstr newtype
+newtype LiftedInstr instr label = LiftInstr { lowerInstr :: instr label }
+    deriving (Show, Eq)
+
+instance Functor instr => Functor (LiftedInstr instr) where
+    fmap f (LiftInstr i) = LiftInstr (fmap f i)
+
+instance (Read1 instr) => Read1 (LiftedInstr instr) where
+    liftReadsPrec readsPrec readList prec
+      = readP_to_S . fmap LiftInstr . readS_to_P
+      $ liftReadsPrec readsPrec readList prec
+
+instance (Applicative f, Instruction instr operands)
+    => InstructionF f (LiftedInstr instr) operands where
+    interpretF (LiftInstr instr) = pure . interpret instr
 
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
@@ -407,7 +424,9 @@ nextF machine = Compose $ do
 
 next :: (Instruction instr value)
      => GMachine label instr value -> Maybe (GMachine label instr value)
-next = getComposeRid . nextF
+next = fmap (transMachineInstrs lowerInstr)
+     . getComposeRid . nextF
+     . transMachineInstrs LiftInstr
 
 -- Turn a KCoalgebra into a KCoalgebra for Cofree Comonad's Base functor
 liftCofreeF :: (Functor f) => (a -> f b) -> a -> CofreeF f a b
@@ -430,7 +449,7 @@ runF = F.ana $ Compose . Identity . liftCofreeF nextF
 -- Hylomorph the Cofree Maybe functor to a List
 run :: (Instruction instr value)
     => GMachine label instr value -> [GMachine label instr value]
-run = F.hylo (curryCofreeF (:) (fromMaybe [] . getComposeRid)) (liftCofreeF nextF)
+run = F.hylo (curryCofreeF (:) (fromMaybe [])) (liftCofreeF next)
 
 runEnd :: (Instruction instr value)
        => GMachine label instr value -> GMachine label instr value
