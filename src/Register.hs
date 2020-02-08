@@ -432,8 +432,9 @@ next = fmap (transMachineInstrs lowerInstr)
 liftCofreeF :: (Functor f) => (a -> f b) -> a -> CofreeF f a b
 liftCofreeF f a = a :< f a
 
-curryCofreeF :: (Functor f) => (a -> c -> d) -> (f b -> c) -> CofreeF f a b -> d
-curryCofreeF f g (a :< b) = f a (g b)
+-- Turn a combining function and KAlgebra into a KAlgebra for Cofree Comonad's Base functor
+lowerCofreeF :: (Functor f) => (a -> c -> d) -> (f b -> c) -> CofreeF f a b -> d
+lowerCofreeF f g (a :< b) = f a (g b)
 
 getComposeRid :: (Functor f) => Compose f Identity a -> f a
 getComposeRid = fmap runIdentity . getCompose
@@ -449,7 +450,7 @@ runF = F.ana $ Compose . Identity . liftCofreeF nextF
 -- Hylomorph the Cofree Maybe functor to a List
 run :: (Instruction instr value)
     => GMachine label instr value -> [GMachine label instr value]
-run = F.hylo (curryCofreeF (:) (fromMaybe [])) (liftCofreeF next)
+run = F.hylo (lowerCofreeF (:) (fromMaybe [])) (liftCofreeF next)
 
 runEnd :: (Instruction instr value)
        => GMachine label instr value -> GMachine label instr value
