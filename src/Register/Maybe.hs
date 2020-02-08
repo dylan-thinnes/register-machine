@@ -14,14 +14,12 @@ import Data.Functor.Classes
 
 data Maybe label = Maybe label
     deriving Functor
-data Pair a = Pair { nojump :: a, jump :: a }
-    deriving Functor
 
-instance InstructionF Pair Maybe a where
+instance InstructionF [] Maybe a where
     interpretF (Maybe label) machinestate
-      = Pair
-        (L.over position (fmap succ) machinestate)
-        (L.set position label machinestate)
+      = [ L.over position (fmap succ) machinestate
+        , L.set position label machinestate
+        ]
 
 -- Parse in a regular instruction
 parseInstr :: ReadP label -> ReadP (Maybe label)
