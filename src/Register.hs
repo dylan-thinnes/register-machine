@@ -109,6 +109,14 @@ injRNatTrans :: (Applicative m)
              -> (forall label. InstrSum left i1 label -> m (InstrSum left i2 label))
 injRNatTrans g = appNatTrans pure g
 
+-- Define Read1 instance for InstrSum, assuming both contained instructions are different
+instance (Read1 i1, Read1 i2) => Read1 (InstrSum i1 i2) where
+    liftReadsPrec readsPrec readList prec
+      = readP_to_S
+      $ choice [ fmap InstrL $ readS_to_P $ liftReadsPrec readsPrec readList prec
+               , fmap InstrR $ readS_to_P $ liftReadsPrec readsPrec readList prec
+               ]
+
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
     deriving (Show, Read, Enum, Eq, Ord, Num)
