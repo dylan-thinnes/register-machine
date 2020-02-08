@@ -445,11 +445,15 @@ getComposeRid = fmap runIdentity . getCompose
 getComposeLid :: Compose Identity g a -> g a
 getComposeLid = runIdentity . getCompose
 
--- Unfold Machine into Cofree f Machine, using recursion-schemes
+-- Unfold GMachine into Cofree f GMachine using recursion-schemes, assuming
+-- that its instruction set belongs to the InstructionF typeclass.
 runF :: (InstructionF f instr value, Functor f)
      => GMachine label instr value
      -> Cofree (Compose Maybe f) (GMachine label instr value)
 runF = F.ana $ Compose . Identity . liftCofreeF nextF
+
+-- Convenient type synonym for roses that runF would produce with a list functor
+type MachineRose = Cofree (Compose Maybe [])
 
 -- Hylomorph the Cofree Maybe functor to a List
 run :: (Instruction instr value)
