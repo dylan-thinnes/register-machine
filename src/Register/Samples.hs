@@ -131,3 +131,10 @@ maybeRead = read $ unlines
     , "inc r0"
     ]
 
+infiniteMaybe :: MaybeMachine
+infiniteMaybe = read $ unlines
+    [ "registers"
+    , "loop: inc r0"
+    , "      maybe loop"
+    ]
+
