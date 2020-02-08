@@ -42,14 +42,14 @@ instance InstructionF Branch Maybe a where
               , jump   = Straight $ L.set position label machinestate
               }
 
--- Parse in a regular instruction
-parseInstr :: ReadP label -> ReadP (Maybe label)
-parseInstr label = do
+-- Parse in a maybe
+parseMaybe :: ReadP label -> ReadP (Maybe label)
+parseMaybe label = do
     string "maybe"
     sp
     label <- label
     pure $ Maybe label
 
 instance Read1 Maybe where
-    liftReadsPrec readsPrec _ _ = readP_to_S $ parseInstr (readS_to_P (readsPrec 10))
+    liftReadsPrec readsPrec _ _ = readP_to_S $ parseMaybe (readS_to_P (readsPrec 10))
 
