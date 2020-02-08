@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -15,11 +16,31 @@ import Data.Functor.Classes
 data Maybe label = Maybe label
     deriving Functor
 
-instance InstructionF [] Maybe a where
+-- Isomorphic to an explicit binary tree...
+data Branch a = Split { nojump :: Branch a, jump :: Branch a } | Straight a
+    deriving (Foldable, Functor, Show)
+
+instance Applicative Branch where
+    pure = Straight
+    (Straight f) <*> x = fmap f x
+    (Split f g) <*> x = Split (f <*> x) (g <*> x)
+
+-- Simple, broken instance of Show1 for Branch:
+instance Show1 Branch where
+    liftShowsPrec showsPrec showList prec (Split {..})
+      = ("Split {nojump = " ++)
+      . liftShowsPrec showsPrec showList 10 nojump
+      . (", jump = " ++)
+      . liftShowsPrec showsPrec showList 10 jump
+      . ("}" ++)
+    liftShowsPrec showsPrec showList prec (Straight a)
+      = ("Straight (" ++) . showsPrec 10 a . (")" ++)
+
+instance InstructionF Branch Maybe a where
     interpretF (Maybe label) machinestate
-      = [ L.over position (fmap succ) machinestate
-        , L.set position label machinestate
-        ]
+      = Split { nojump = Straight $ L.over position (fmap succ) machinestate
+              , jump   = Straight $ L.set position label machinestate
+              }
 
 -- Parse in a regular instruction
 parseInstr :: ReadP label -> ReadP (Maybe label)
