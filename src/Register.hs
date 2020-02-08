@@ -269,6 +269,10 @@ class InstructionF f instr operands where
               -> GMachineState label operands
               -> f (GMachineState label operands)
 
+instance (InstructionF f i1 a, InstructionF f i2 a) => InstructionF f (InstrSum i1 i2) a where
+    interpretF (InstrL instr) machinestate = interpretF instr machinestate
+    interpretF (InstrR instr) machinestate = interpretF instr machinestate
+
 -- Any ordinary Instruction instance can be turned into a InstructionF instance
 -- for any Applicative functor if wrapped in the LiftedInstr newtype
 newtype LiftedInstr instr label = LiftInstr { lowerInstr :: instr label }
