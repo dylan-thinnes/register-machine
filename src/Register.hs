@@ -60,7 +60,10 @@ instance Show Register where
 -- Simple string labels, using a newtype wrapper so we can write custom read
 -- parsers for them
 newtype Label = Label String
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Label where
+    show (Label s) = s
 
 -- Add InstrSum constructors, which creates a new instruction set from two
 -- previous instruction sets, f and g
