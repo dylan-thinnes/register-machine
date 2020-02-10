@@ -142,7 +142,7 @@ parseMacro :: ReadP label -> ReadP (MacroData label)
 parseMacro label = do
     string "macro"
     sp
-    name <- identifier
+    name <- readS_to_P reads
     registers <- many $ sp >> register
     labels <- many $ sp >> labelArgument
     pure $ MacroData name registers labels
