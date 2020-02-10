@@ -1,2 +1,2 @@
 #!/bin/bash
-echo "registers ${@:2}" | cat - $1 | stack exec register-machine
+echo "registers ${@:2}" | cat - $1 | stack exec register-machine -- -t
