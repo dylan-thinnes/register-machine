@@ -119,7 +119,10 @@ instance (Read1 i1, Read1 i2) => Read1 (InstrSum i1 i2) where
 
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
-    deriving (Show, Read, Enum, Eq, Ord, Num)
+    deriving (Read, Enum, Eq, Ord, Num)
+
+instance Show Position where
+    show = show . unpos
 
 -- GCode - A synonym for a map containing Positions and their Instructions
 -- The "label" type parameter is for jump instructions that have an unfound
