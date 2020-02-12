@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Register.Maybe where
 
@@ -12,9 +13,11 @@ import Control.Lens ((^.), (.~), (%~))
 import Register
 import Text.ParserCombinators.ReadP
 import Data.Functor.Classes
+import Text.Show.Deriving (deriveShow1)
 
 data Maybe label = Maybe label
-    deriving Functor
+    deriving (Show, Functor)
+deriveShow1 ''Maybe
 
 -- Isomorphic to an explicit binary tree...
 data Branch a = Split { nojump :: Branch a, jump :: Branch a } | Straight a

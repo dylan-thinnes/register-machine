@@ -1,6 +1,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Register.Instr where
 
@@ -9,10 +10,12 @@ import Data.Functor.Classes
 import Text.ParserCombinators.ReadP
 import qualified Control.Lens as L
 import Data.Function ((&))
+import Text.Show.Deriving (deriveShow1)
 
 -- Instructions, with choice of any value for labels
 data Instr label = Decjz Register label | Inc Register
     deriving (Show, Read, Eq, Ord, Functor)
+deriveShow1 ''Instr
 
 type Machine label = GMachine label Instr Integer
 type Code label = GCode Instr label

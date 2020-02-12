@@ -27,6 +27,7 @@ dependencies:
 - data-default
 - primes
 - free
+- deriving-compat
 
 library:
   source-dirs: src

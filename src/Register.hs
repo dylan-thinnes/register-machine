@@ -14,6 +14,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Register where
 
@@ -46,6 +47,8 @@ import Data.Bifunctor
 
 import Control.Comonad.Trans.Cofree
 
+import Text.Show.Deriving (deriveShow1)
+
 -- ============================================================================
 -- ================================ DATA TYPES ================================
 -- ============================================================================
@@ -68,7 +71,7 @@ instance Show Label where
 -- Add InstrSum constructors, which creates a new instruction set from two
 -- previous instruction sets, f and g
 newtype InstrSum f g a = InstrSum (Sum f g a)
-    deriving (Functor, Foldable, Traversable)
+    deriving (Show, Functor, Foldable, Traversable)
 pattern InstrL x <- InstrSum (InL x) where
     InstrL x = InstrSum (InL x)
 pattern InstrR x <- InstrSum (InR x) where
@@ -283,6 +286,7 @@ instance (InstructionF f i1 a, InstructionF f i2 a) => InstructionF f (InstrSum 
 -- for any Applicative functor if wrapped in the LiftedInstr newtype
 newtype LiftedInstr instr label = LiftInstr { lowerInstr :: instr label }
     deriving (Show, Eq)
+deriveShow1 ''LiftedInstr
 
 instance Functor instr => Functor (LiftedInstr instr) where
     fmap f (LiftInstr i) = LiftInstr (fmap f i)

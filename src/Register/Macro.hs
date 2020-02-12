@@ -42,7 +42,7 @@ data MacroData label
     , macroRegisters :: [Register]
     , macroLabels :: [label]
     }
-    deriving (Eq, Ord, Functor)
+    deriving (Eq, Ord, Show, Functor)
 
 -- Submachines encapsulate the concept of running a register machine inside of
 -- a single register machine
@@ -155,12 +155,3 @@ parseMacro label = do
 instance Read1 MacroData where
     liftReadsPrec readsPrec readList _
       = readP_to_S $ parseMacro (readS_to_P $ readsPrec 10)
-
--- Show a macro
-instance (Show (instr label), Show label) => Show (Macro instr label) where
-    show (NMacro x) = show x
-    show (YMacro (MacroData x registers labels))
-      = unwords $ ["Macro", show x] ++ map show registers ++ map showLabel labels
-        where
-            showLabel x = '#' : show x
-
