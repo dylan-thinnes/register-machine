@@ -43,7 +43,7 @@ runTrace machine = do
 
 -- Run interactively, giving the user the choice of movement down the tree in a NRM 
 runInteractive :: forall f label instr value. 
-                  (InstructionF f instr value, Foldable f, Applicative f
+                  ( InstructionF f instr value, Foldable f, Applicative f
                   , Functor instr, Default value, Eq label, Show value
                   , Show label, Show (instr String))
                => GMachine label instr value
