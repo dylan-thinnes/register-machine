@@ -19,7 +19,7 @@ data Maybe label = Maybe label
     deriving (Show, Functor)
 deriveShow1 ''Maybe
 
--- Isomorphic to an explicit binary tree...
+-- Isomorphic to an explicitly recursive binary tree...
 data Branch a = Split { nojump :: Branch a, jump :: Branch a } | Straight a
     deriving (Foldable, Functor, Show)
 
