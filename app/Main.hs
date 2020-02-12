@@ -41,27 +41,34 @@ runTrace machine = do
     mapM_ (hPutStrLn stderr . debug True) trace
     reportRegistersIO $ last trace
 
--- Run interactively, giving the user the choice of movement down the tree
-runInteractive :: forall f label instr value. (InstructionF f instr value, Foldable f, Applicative f, Functor instr, Default value, Eq label, Show value, Show label, Show (instr String))
+-- Run interactively, giving the user the choice of movement down the tree in a NRM 
+runInteractive :: forall f label instr value. 
+                  (InstructionF f instr value, Foldable f, Applicative f
+                  , Functor instr, Default value, Eq label, Show value
+                  , Show label, Show (instr String))
                => GMachine label instr value
                -> IO ()
 runInteractive machine = do
     finalState <- interact $ runF machine
     reportRegistersIO finalState
     where
+        -- Traverse down the tree until halting with a final GMachine state
         interact :: MachineTrace f (GMachine label instr value) -> IO (GMachine label instr value)
         interact (runCofree -> m :< rest) = do
             hPutStrLn stderr $ debug True m
             case getCompose rest of
               Just rest -> chooseBranch rest
               Nothing   -> hPutStrLn stderr "Machine halted." >> pure m
+        -- Prompt the user to choose a branch from several.
         chooseBranch f = prompt (toList f) >>= interact
         prompt choices = do
-            hPutStrLn stderr $ "There are " ++ show (length choices) ++ " option(s)."
+            hPutStrLn stderr $ "There are " ++ show (length choices) ++ " option(s).\n" ++
+                               "Pick a number from 1 to " ++ show (length choices)
             result <- tryParseInput choices <$> getLine
             case result of
               Just res -> pure res
               Nothing  -> hPutStrLn stderr "Invalid input. Try again." >> prompt choices
+        -- Try to parse the user's input and use it to pick a 
         tryParseInput choices s = do
             ii <- readMay s
-            choices `atMay` ii
+            choices `atMay` pred ii
