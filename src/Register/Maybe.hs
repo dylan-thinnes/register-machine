@@ -45,6 +45,12 @@ instance InstructionF Branch Maybe a where
               , jump   = Straight $ L.set position label machinestate
               }
 
+instance InstructionF [] Maybe a where
+    interpretF (Maybe label) machinestate
+      = [ L.over position (fmap succ) machinestate
+        , L.set position label machinestate
+        ]
+
 -- Parse in a maybe
 parseMaybe :: ReadP label -> ReadP (Maybe label)
 parseMaybe label = do
