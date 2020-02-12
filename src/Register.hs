@@ -463,6 +463,7 @@ runF :: (InstructionF f instr value, Functor f)
 runF = F.ana $ Compose . Identity . liftCofreeF nextF
 
 -- Convenient type synonym for roses that runF would produce with a list functor
+type MachineTrace f = Cofree (Compose Maybe f)
 type MachineRose = Cofree (Compose Maybe [])
 
 -- Hylomorph the Cofree Maybe functor to a List
