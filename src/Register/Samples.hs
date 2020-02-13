@@ -3,6 +3,7 @@ module Register.Samples where
 import Register
 import Register.Instr
 import Register.Macro
+import Register.Maybe
 
 import qualified Data.Map as M
 
@@ -109,4 +110,31 @@ readMacroAssemblyStr i = unlines
        , "l3 : decjz r-2 end"
        , "       decjz r-4 l3"
        ]
+
+-- Example of non-deterministic machines:
+type MaybeMachine = GMachine Label (InstrSum (LiftedInstr Instr) Register.Maybe.Maybe) Integer
+maybe :: MaybeMachine
+maybe = GMachineAll instrs registers $ Right 0
+    where
+    registers = M.empty
+    instrs = M.fromList $ zip [0..]
+        [ InstrL $ LiftInstr $ Inc 0
+        , InstrR $ Maybe $ Left $ Label "EXIT"
+        , InstrL $ LiftInstr $ Inc 0
+        ]
+
+maybeRead :: MaybeMachine
+maybeRead = read $ unlines
+    [ "registers"
+    , "inc r0"
+    , "maybe EXIT"
+    , "inc r0"
+    ]
+
+infiniteMaybe :: MaybeMachine
+infiniteMaybe = read $ unlines
+    [ "registers"
+    , "loop: inc r0"
+    , "      maybe loop"
+    ]
 

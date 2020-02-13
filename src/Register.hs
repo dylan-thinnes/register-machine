@@ -14,6 +14,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Register where
 
@@ -46,6 +47,8 @@ import Data.Bifunctor
 
 import Control.Comonad.Trans.Cofree
 
+import Text.Show.Deriving (deriveShow1)
+
 -- ============================================================================
 -- ================================ DATA TYPES ================================
 -- ============================================================================
@@ -60,12 +63,15 @@ instance Show Register where
 -- Simple string labels, using a newtype wrapper so we can write custom read
 -- parsers for them
 newtype Label = Label String
-    deriving (Show, Eq, Ord)
+    deriving (Eq, Ord)
+
+instance Show Label where
+    show (Label s) = s
 
 -- Add InstrSum constructors, which creates a new instruction set from two
 -- previous instruction sets, f and g
 newtype InstrSum f g a = InstrSum (Sum f g a)
-    deriving (Functor, Foldable, Traversable)
+    deriving (Show, Functor, Foldable, Traversable)
 pattern InstrL x <- InstrSum (InL x) where
     InstrL x = InstrSum (InL x)
 pattern InstrR x <- InstrSum (InR x) where
@@ -109,9 +115,20 @@ injRNatTrans :: (Applicative m)
              -> (forall label. InstrSum left i1 label -> m (InstrSum left i2 label))
 injRNatTrans g = appNatTrans pure g
 
+-- Define Read1 instance for InstrSum, assuming both contained instructions are different
+instance (Read1 i1, Read1 i2) => Read1 (InstrSum i1 i2) where
+    liftReadsPrec readsPrec readList prec
+      = readP_to_S
+      $ choice [ fmap InstrL $ readS_to_P $ liftReadsPrec readsPrec readList prec
+               , fmap InstrR $ readS_to_P $ liftReadsPrec readsPrec readList prec
+               ]
+
 -- Positions are just Integers, but we don't want them to be interchangeable so we use newtype
 newtype Position = Position { unpos :: Integer }
-    deriving (Show, Read, Enum, Eq, Ord, Num)
+    deriving (Read, Enum, Eq, Ord, Num)
+
+instance Show Position where
+    show = show . unpos
 
 -- GCode - A synonym for a map containing Positions and their Instructions
 -- The "label" type parameter is for jump instructions that have an unfound
@@ -236,6 +253,11 @@ sublens r = L.lens (fromMaybe def . M.lookup r) (\m i -> M.insert r i m)
 -- Could use this sublens, but use of L.non means it removes keys w/ value 0
 -- sublens r = L.at r . L.non 0
 
+-- Transform the instructions to other instructions in a machine using a
+-- natural transformation
+transMachineInstrs :: (i1 :-> i2) -> GMachine label i1 values -> GMachine label i2 values
+transMachineInstrs transformation = instructions %~ fmap transformation
+
 -- We also define the Instruction typeclass, which represents instructions
 -- which can be interpreted to transform a GMachine
 class Instruction instr operands where
@@ -256,10 +278,27 @@ class InstructionF f instr operands where
               -> GMachineState label operands
               -> f (GMachineState label operands)
 
--- Determine that any ordinary Instruction instance can be turned into the
--- InstructionF instance with Identity as "f"
-instance Instruction instr operands => InstructionF Identity instr operands where
-    interpretF instr = Identity . interpret instr
+instance (InstructionF f i1 a, InstructionF f i2 a) => InstructionF f (InstrSum i1 i2) a where
+    interpretF (InstrL instr) machinestate = interpretF instr machinestate
+    interpretF (InstrR instr) machinestate = interpretF instr machinestate
+
+-- Any ordinary Instruction instance can be turned into a InstructionF instance
+-- for any Applicative functor if wrapped in the LiftedInstr newtype
+newtype LiftedInstr instr label = LiftInstr { lowerInstr :: instr label }
+    deriving (Show, Eq)
+deriveShow1 ''LiftedInstr
+
+instance Functor instr => Functor (LiftedInstr instr) where
+    fmap f (LiftInstr i) = LiftInstr (fmap f i)
+
+instance (Read1 instr) => Read1 (LiftedInstr instr) where
+    liftReadsPrec readsPrec readList prec
+      = readP_to_S . fmap LiftInstr . readS_to_P
+      $ liftReadsPrec readsPrec readList prec
+
+instance (Applicative f, Instruction instr operands)
+    => InstructionF f (LiftedInstr instr) operands where
+    interpretF (LiftInstr instr) = pure . interpret instr
 
 -- ============================================================================
 -- ============================ READING AND PARSING ===========================
@@ -370,7 +409,7 @@ debug markPosition (GMachineAll _instructions _registers _position)
 
 -- Report the registers as according to the coursework spec
 reportRegisters :: (Show value, Default value) => M.Map Register value -> String
-reportRegisters positions = "registers " ++ unwords regs
+reportRegisters positions = unwords $ "registers" : regs
     where
     -- Lookup the register for each position, defaulting to 0 if it isn't there
     regs = map (\r -> show $ L.view (sublens r) positions) regNums
@@ -399,30 +438,38 @@ nextF machine = Compose $ do
 
 next :: (Instruction instr value)
      => GMachine label instr value -> Maybe (GMachine label instr value)
-next = getComposeRid . nextF
+next = fmap (transMachineInstrs lowerInstr)
+     . getComposeRid . nextF
+     . transMachineInstrs LiftInstr
 
 -- Turn a KCoalgebra into a KCoalgebra for Cofree Comonad's Base functor
 liftCofreeF :: (Functor f) => (a -> f b) -> a -> CofreeF f a b
 liftCofreeF f a = a :< f a
 
-curryCofreeF :: (Functor f) => (a -> c -> d) -> (f b -> c) -> CofreeF f a b -> d
-curryCofreeF f g (a :< b) = f a (g b)
+-- Turn a combining function and KAlgebra into a KAlgebra for Cofree Comonad's Base functor
+lowerCofreeF :: (Functor f) => (a -> c -> d) -> (f b -> c) -> CofreeF f a b -> d
+lowerCofreeF f g (a :< b) = f a (g b)
 
 getComposeRid :: (Functor f) => Compose f Identity a -> f a
 getComposeRid = fmap runIdentity . getCompose
 getComposeLid :: Compose Identity g a -> g a
 getComposeLid = runIdentity . getCompose
 
--- Unfold Machine into Cofree f Machine, using recursion-schemes
+-- Unfold GMachine into Cofree f GMachine using recursion-schemes, assuming
+-- that its instruction set belongs to the InstructionF typeclass.
 runF :: (InstructionF f instr value, Functor f)
      => GMachine label instr value
      -> Cofree (Compose Maybe f) (GMachine label instr value)
 runF = F.ana $ Compose . Identity . liftCofreeF nextF
 
+-- Convenient type synonym for roses that runF would produce with a list functor
+type MachineTrace f = Cofree (Compose Maybe f)
+type MachineRose = Cofree (Compose Maybe [])
+
 -- Hylomorph the Cofree Maybe functor to a List
 run :: (Instruction instr value)
     => GMachine label instr value -> [GMachine label instr value]
-run = F.hylo (curryCofreeF (:) (fromMaybe [] . getComposeRid)) (liftCofreeF nextF)
+run = F.hylo (lowerCofreeF (:) (fromMaybe [])) (liftCofreeF next)
 
 runEnd :: (Instruction instr value)
        => GMachine label instr value -> GMachine label instr value
